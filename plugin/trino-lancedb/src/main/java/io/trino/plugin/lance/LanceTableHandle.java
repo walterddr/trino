@@ -15,9 +15,12 @@ package io.trino.plugin.lance;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
+import io.trino.spi.predicate.TupleDomain;
 
 import java.util.Objects;
+import java.util.OptionalLong;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -28,13 +31,31 @@ public class LanceTableHandle
     private final String schemaName;
     private final String tableName;
     private final String tablePath;
+    private final TupleDomain<ColumnHandle> constraints;
+    private final OptionalLong limit;
 
     @JsonCreator
-    public LanceTableHandle(@JsonProperty("schemaName") String schemaName, @JsonProperty("tableName") String tableName, @JsonProperty("tablePath") String tablePath)
+    public LanceTableHandle(
+            @JsonProperty("schemaName") String schemaName,
+            @JsonProperty("tableName") String tableName,
+            @JsonProperty("tablePath") String tablePath)
+    {
+        this(schemaName, tableName, tablePath, TupleDomain.none(), OptionalLong.empty());
+    }
+
+    @JsonCreator
+    public LanceTableHandle(
+            @JsonProperty("schemaName") String schemaName,
+            @JsonProperty("tableName") String tableName,
+            @JsonProperty("tablePath") String tablePath,
+            @JsonProperty("constraints") TupleDomain<ColumnHandle> constrains,
+            @JsonProperty("limit") OptionalLong limit)
     {
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.tablePath = requireNonNull(tablePath, "tablePath is null");
+        this.constraints = constrains;
+        this.limit = limit;
     }
 
     @JsonProperty
@@ -82,5 +103,15 @@ public class LanceTableHandle
                 .add("tableName", tableName)
                 .add("tablePath", tablePath)
                 .toString();
+    }
+
+    public TupleDomain<ColumnHandle> getConstraints()
+    {
+        return constraints;
+    }
+
+    public OptionalLong getLimit()
+    {
+        return limit;
     }
 }
