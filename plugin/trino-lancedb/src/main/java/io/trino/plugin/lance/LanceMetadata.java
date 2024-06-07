@@ -16,9 +16,12 @@ package io.trino.plugin.lance;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
+import io.trino.plugin.base.projection.ApplyProjectionUtil;
 import io.trino.plugin.lance.internal.LanceReader;
 import io.trino.plugin.lance.internal.LanceUtils;
+import io.trino.spi.connector.Assignment;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorMetadata;
@@ -34,6 +37,7 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Variable;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
@@ -46,9 +50,16 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.Function;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.trino.plugin.base.projection.ApplyProjectionUtil.extractSupportedProjectedColumns;
+import static io.trino.plugin.base.projection.ApplyProjectionUtil.replaceWithNewVariables;
 import static java.util.Objects.requireNonNull;
+import static java.util.function.Function.identity;
 
 public class LanceMetadata
         implements ConnectorMetadata
@@ -140,6 +151,43 @@ public class LanceMetadata
     }
 
     @Override
+    public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(ConnectorSession session,
+            ConnectorTableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+    {
+        Map<ConnectorExpression, ApplyProjectionUtil.ProjectedColumnRepresentation> columnProjections = projections.stream()
+                .collect(toImmutableMap(identity(), ApplyProjectionUtil::createProjectedColumnRepresentation));
+        if (columnProjections.values().stream().allMatch(ApplyProjectionUtil.ProjectedColumnRepresentation::isVariable)) {
+            Set<LanceColumnHandle> projectedColumns = assignments.values().stream()
+                    .map(LanceColumnHandle.class::cast)
+                    .collect(toImmutableSet());
+            LanceTableHandle oldHandle = (LanceTableHandle) table;
+            if (oldHandle.getProjections().equals(projectedColumns)) {
+                return Optional.empty();
+            }
+            List<Assignment> assignmentsList = assignments.entrySet().stream()
+                    .map(assignment -> new Assignment(
+                            assignment.getKey(),
+                            assignment.getValue(),
+                            ((LanceColumnHandle) assignment.getValue()).trinoType()))
+                    .collect(toImmutableList());
+            LanceTableHandle newHandle = new LanceTableHandle(
+                    oldHandle.getSchemaName(),
+                    oldHandle.getTableName(),
+                    oldHandle.getTablePath(),
+                    projectedColumns,
+                    oldHandle.getConstraints(),
+                    oldHandle.getLimit());
+            return Optional.of(new ProjectionApplicationResult<>(
+                    newHandle,
+                    projections,
+                    assignmentsList,
+                    false));
+        } else {
+            return Optional.empty();
+        }
+    }
+
+    @Override
     public Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(ConnectorSession session,
             ConnectorTableHandle table, long limit)
     {
@@ -151,9 +199,10 @@ public class LanceMetadata
                     oldHandle.getSchemaName(),
                     oldHandle.getTableName(),
                     oldHandle.getTablePath(),
+                    oldHandle.getProjections(),
                     oldHandle.getConstraints(),
                     OptionalLong.of(limit));
-            // TODO: revisit limitGuaranteed. i think this is a guaranteed limit but not setting to true until verified.
+            // currently limit is applied after scan without x-split guarantee
             return Optional.of(new LimitApplicationResult<>(newHandle, false, false));
         }
     }
@@ -195,6 +244,7 @@ public class LanceMetadata
                 oldHandle.getSchemaName(),
                 oldHandle.getTableName(),
                 oldHandle.getTablePath(),
+                oldHandle.getProjections(),
                 newDomain,
                 oldHandle.getLimit());
         return Optional.of(new ConstraintApplicationResult<>(newHandle, remainingFilter, constraint.getExpression(), false));

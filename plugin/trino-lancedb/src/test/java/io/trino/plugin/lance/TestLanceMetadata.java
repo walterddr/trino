@@ -44,7 +44,6 @@ public class TestLanceMetadata
     private static final LanceTableHandle TEST_TABLE_2_HANDLE = new LanceTableHandle("default", "test_table2",
             TEST_DB_PATH + "test_table2.lance/");
 
-    private static final ArrowType INT64_TYPE = new ArrowType.Int(64, true);
     private LanceMetadata metadata;
 
     @BeforeEach
@@ -81,10 +80,10 @@ public class TestLanceMetadata
         // known table
 
         assertThat(metadata.getColumnHandles(SESSION, TEST_TABLE_1_HANDLE)).isEqualTo(ImmutableMap.of(
-                "b", new LanceColumnHandle("b", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)),
-                "c", new LanceColumnHandle("c", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)),
-                "x", new LanceColumnHandle("x", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)),
-                "y", new LanceColumnHandle("y", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE))));
+                "b", TestingUtils.COLUMN_HANDLE_B,
+                "c", TestingUtils.COLUMN_HANDLE_C,
+                "x", TestingUtils.COLUMN_HANDLE_X,
+                "y", TestingUtils.COLUMN_HANDLE_Y));
 
         // unknown table
         assertThatThrownBy(() -> metadata.getColumnHandles(SESSION, new LanceTableHandle("unknown", "unknown", "unknown")))
@@ -102,10 +101,10 @@ public class TestLanceMetadata
         ConnectorTableMetadata tableMetadata = metadata.getTableMetadata(SESSION, TEST_TABLE_1_HANDLE);
         assertThat(tableMetadata.getTable()).isEqualTo(new SchemaTableName("default", "test_table1"));
         assertThat(tableMetadata.getColumns()).isEqualTo(ImmutableList.of(
-                new LanceColumnHandle("b", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)).getColumnMetadata(),
-                new LanceColumnHandle("c", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)).getColumnMetadata(),
-                new LanceColumnHandle("x", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)).getColumnMetadata(),
-                new LanceColumnHandle("y", LanceColumnHandle.toTrinoType(INT64_TYPE), FieldType.nullable(INT64_TYPE)).getColumnMetadata()));
+                TestingUtils.COLUMN_HANDLE_B.getColumnMetadata(),
+                TestingUtils.COLUMN_HANDLE_C.getColumnMetadata(),
+                TestingUtils.COLUMN_HANDLE_X.getColumnMetadata(),
+                TestingUtils.COLUMN_HANDLE_Y.getColumnMetadata()));
 
         // unknown tables should produce null
         assertThat(metadata.getTableMetadata(SESSION, new LanceTableHandle("unknown", "unknown", "unknown"))).isNull();

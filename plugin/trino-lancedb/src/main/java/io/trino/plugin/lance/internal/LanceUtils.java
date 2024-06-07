@@ -14,10 +14,15 @@
 package io.trino.plugin.lance.internal;
 
 import com.google.common.base.Joiner;
+import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import io.trino.plugin.lance.LanceColumnHandle;
+import io.trino.spi.connector.ColumnHandle;
+import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Variable;
 import io.trino.spi.predicate.Domain;
 import io.trino.spi.predicate.Range;
+import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.predicate.ValueSet;
 import io.trino.spi.type.RealType;
 import io.trino.spi.type.Type;
@@ -26,8 +31,12 @@ import io.trino.spi.type.VarcharType;
 import org.apache.commons.codec.binary.Hex;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -45,6 +54,25 @@ public class LanceUtils
         boolean isNotNull = valueSet.isAll() && !domain.isNullAllowed();
         boolean isInOrNull = !valueSet.getRanges().getOrderedRanges().isEmpty() && domain.isNullAllowed();
         return isNotNull || domain.isOnlyNull() || isInOrNull;
+    }
+
+    public static List<String> getProjections(Set<LanceColumnHandle> lanceColumnHandles)
+    {
+        return lanceColumnHandles.stream().map(LanceColumnHandle::name).toList();
+    }
+
+    public static List<String> getFilterClause(TupleDomain<ColumnHandle> constraints)
+    {
+        if (constraints.isNone()) {
+            return ImmutableList.of();
+        }
+        ImmutableList.Builder<String> conjunctsBuilder = ImmutableList.builder();
+        Map<ColumnHandle, Domain> domains = constraints.getDomains().orElseThrow();
+        for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
+            LanceColumnHandle pinotColumnHandle = (LanceColumnHandle) entry.getKey();
+            toPredicate(pinotColumnHandle, entry.getValue()).ifPresent(conjunctsBuilder::add);
+        }
+        return conjunctsBuilder.build();
     }
 
     public static Optional<String> toPredicate(LanceColumnHandle columnHandle, Domain domain)
@@ -129,16 +157,18 @@ public class LanceUtils
                 .collect(joining(", ")));
     }
 
+    // TODO: fix quote value
     private static String singleQuote(Object value)
     {
         if (value instanceof String string) {
             return format("'%s'", string.replace("'", "''"));
         }
-        return format("'%s'", value);
+        return format("%s", value);
     }
 
+    // TODO: fix quote identifier
     private static String quoteIdentifier(String identifier)
     {
-        return format("\"%s\"", identifier.replaceAll("\"", "\"\""));
+        return identifier;
     }
 }

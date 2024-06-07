@@ -14,6 +14,7 @@
 package io.trino.plugin.lance.internal;
 
 import com.lancedb.lance.ipc.LanceScanner;
+import com.lancedb.lance.ipc.ScanOptions;
 import io.airlift.slice.Slice;
 import io.trino.plugin.lance.LanceColumnHandle;
 import io.trino.spi.PageBuilder;
@@ -70,14 +71,14 @@ public class LanceArrowToPageScanner
     private final ArrowReader arrowReader;
     private final VectorSchemaRoot vectorSchemaRoot;
 
-    public LanceArrowToPageScanner(BufferAllocator allocator, String path, List<LanceColumnHandle> columns, ScannerFactory scannerFactory)
+    public LanceArrowToPageScanner(BufferAllocator allocator, String path, List<LanceColumnHandle> columns, ScannerFactory scannerFactory, ScanOptions scanOptions)
     {
         this.allocator = requireNonNull(allocator, "allocator is null");
         this.columnTypes = requireNonNull(columns, "columns is null").stream().map(LanceColumnHandle::trinoType)
                 .collect(toImmutableList());
         this.scannerFactory = scannerFactory;
         try {
-            lanceScanner = scannerFactory.open(path, allocator);
+            lanceScanner = scannerFactory.open(path, allocator, scanOptions);
             this.arrowReader = lanceScanner.scanBatches();
             this.vectorSchemaRoot = arrowReader.getVectorSchemaRoot();
         }
