@@ -15,9 +15,15 @@ package io.trino.plugin.lance;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableSet;
+import io.trino.plugin.lance.internal.LanceUtils;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
+import io.trino.spi.predicate.TupleDomain;
 
 import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.Set;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
@@ -28,13 +34,31 @@ public class LanceTableHandle
     private final String schemaName;
     private final String tableName;
     private final String tablePath;
+    private final Set<LanceColumnHandle> projections;
+    private final TupleDomain<ColumnHandle> constraints;
+    private final OptionalLong limit;
+
+    public LanceTableHandle(String schemaName, String tableName, String tablePath)
+    {
+        // by default project all and access all filter columns
+        this(schemaName, tableName, tablePath, ImmutableSet.of(), TupleDomain.all(), OptionalLong.empty());
+    }
 
     @JsonCreator
-    public LanceTableHandle(@JsonProperty("schemaName") String schemaName, @JsonProperty("tableName") String tableName, @JsonProperty("tablePath") String tablePath)
+    public LanceTableHandle(
+            @JsonProperty("schemaName") String schemaName,
+            @JsonProperty("tableName") String tableName,
+            @JsonProperty("tablePath") String tablePath,
+            @JsonProperty("projections") Set<LanceColumnHandle> projections,
+            @JsonProperty("constraints") TupleDomain<ColumnHandle> constrains,
+            @JsonProperty("limit") OptionalLong limit)
     {
         this.schemaName = requireNonNull(schemaName, "schemaName is null");
         this.tableName = requireNonNull(tableName, "tableName is null");
         this.tablePath = requireNonNull(tablePath, "tablePath is null");
+        this.projections = projections;
+        this.constraints = constrains;
+        this.limit = limit;
     }
 
     @JsonProperty
@@ -82,5 +106,24 @@ public class LanceTableHandle
                 .add("tableName", tableName)
                 .add("tablePath", tablePath)
                 .toString();
+    }
+
+    public Set<LanceColumnHandle> getProjections()
+    {
+        return projections;
+    }
+
+    public TupleDomain<ColumnHandle> getConstraints()
+    {
+        return constraints;
+    }
+
+    public OptionalLong getLimit()
+    {
+        return limit;
+    }
+
+    public boolean containsProjection(String columnName) {
+        return projections == null || projections.isEmpty() || LanceUtils.getProjections(projections).contains(columnName);
     }
 }

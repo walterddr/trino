@@ -16,8 +16,12 @@ package io.trino.plugin.lance;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.inject.Inject;
+import io.trino.plugin.base.projection.ApplyProjectionUtil;
 import io.trino.plugin.lance.internal.LanceReader;
+import io.trino.plugin.lance.internal.LanceUtils;
+import io.trino.spi.connector.Assignment;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ConnectorMetadata;
@@ -33,13 +37,29 @@ import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.connector.SchemaTablePrefix;
 import io.trino.spi.connector.TableNotFoundException;
 import io.trino.spi.expression.ConnectorExpression;
+import io.trino.spi.expression.Variable;
+import io.trino.spi.predicate.Domain;
+import io.trino.spi.predicate.TupleDomain;
+import io.trino.spi.predicate.ValueSet;
+import io.trino.spi.type.ArrayType;
+import io.trino.spi.type.Type;
 
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
+import java.util.function.Function;
 
+import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
+import static io.trino.plugin.base.projection.ApplyProjectionUtil.extractSupportedProjectedColumns;
+import static io.trino.plugin.base.projection.ApplyProjectionUtil.replaceWithNewVariables;
 import static java.util.Objects.requireNonNull;
+import static java.util.function.Function.identity;
 
 public class LanceMetadata
         implements ConnectorMetadata
@@ -132,25 +152,102 @@ public class LanceMetadata
 
     @Override
     public Optional<ProjectionApplicationResult<ConnectorTableHandle>> applyProjection(ConnectorSession session,
-            ConnectorTableHandle handle, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
+            ConnectorTableHandle table, List<ConnectorExpression> projections, Map<String, ColumnHandle> assignments)
     {
-        throw new UnsupportedOperationException("unsupported");
+        Map<ConnectorExpression, ApplyProjectionUtil.ProjectedColumnRepresentation> columnProjections = projections.stream()
+                .collect(toImmutableMap(identity(), ApplyProjectionUtil::createProjectedColumnRepresentation));
+        if (columnProjections.values().stream().allMatch(ApplyProjectionUtil.ProjectedColumnRepresentation::isVariable)) {
+            Set<LanceColumnHandle> projectedColumns = assignments.values().stream()
+                    .map(LanceColumnHandle.class::cast)
+                    .collect(toImmutableSet());
+            LanceTableHandle oldHandle = (LanceTableHandle) table;
+            if (oldHandle.getProjections().equals(projectedColumns)) {
+                return Optional.empty();
+            }
+            List<Assignment> assignmentsList = assignments.entrySet().stream()
+                    .map(assignment -> new Assignment(
+                            assignment.getKey(),
+                            assignment.getValue(),
+                            ((LanceColumnHandle) assignment.getValue()).trinoType()))
+                    .collect(toImmutableList());
+            LanceTableHandle newHandle = new LanceTableHandle(
+                    oldHandle.getSchemaName(),
+                    oldHandle.getTableName(),
+                    oldHandle.getTablePath(),
+                    projectedColumns,
+                    oldHandle.getConstraints(),
+                    oldHandle.getLimit());
+            return Optional.of(new ProjectionApplicationResult<>(
+                    newHandle,
+                    projections,
+                    assignmentsList,
+                    false));
+        } else {
+            return Optional.empty();
+        }
     }
 
     @Override
     public Optional<LimitApplicationResult<ConnectorTableHandle>> applyLimit(ConnectorSession session,
             ConnectorTableHandle table, long limit)
     {
-        // TODO: support limit
-        throw new UnsupportedOperationException("unsupported");
+        LanceTableHandle oldHandle = (LanceTableHandle) table;
+        if (oldHandle.getLimit().isPresent() && oldHandle.getLimit().getAsLong() <= limit) {
+            return Optional.empty();
+        } else {
+            LanceTableHandle newHandle = new LanceTableHandle(
+                    oldHandle.getSchemaName(),
+                    oldHandle.getTableName(),
+                    oldHandle.getTablePath(),
+                    oldHandle.getProjections(),
+                    oldHandle.getConstraints(),
+                    OptionalLong.of(limit));
+            // currently limit is applied after scan without x-split guarantee
+            return Optional.of(new LimitApplicationResult<>(newHandle, false, false));
+        }
     }
 
     @Override
     public Optional<ConstraintApplicationResult<ConnectorTableHandle>> applyFilter(ConnectorSession session,
             ConnectorTableHandle table, Constraint constraint)
     {
-        // TODO: support limit
-        throw new UnsupportedOperationException("unsupported");
+        LanceTableHandle oldHandle = (LanceTableHandle) table;
+        TupleDomain<ColumnHandle> oldDomain = oldHandle.getConstraints();
+
+        TupleDomain<ColumnHandle> newDomain = oldDomain.intersect(constraint.getSummary());
+        TupleDomain<ColumnHandle> remainingFilter;
+        if (newDomain.isNone()) {
+            remainingFilter = TupleDomain.all();
+        }
+        else {
+            Map<ColumnHandle, Domain> domains = newDomain.getDomains().orElseThrow();
+
+            Map<ColumnHandle, Domain> supported = new HashMap<>();
+            Map<ColumnHandle, Domain> unsupported = new HashMap<>();
+            for (Map.Entry<ColumnHandle, Domain> entry : domains.entrySet()) {
+                if (LanceUtils.isSupportedFilter((LanceColumnHandle) entry.getKey(), entry.getValue())) {
+                    unsupported.put(entry.getKey(), entry.getValue());
+                }
+                else {
+                    supported.put(entry.getKey(), entry.getValue());
+                }
+            }
+            newDomain = TupleDomain.withColumnDomains(supported);
+            remainingFilter = TupleDomain.withColumnDomains(unsupported);
+        }
+
+        if (oldDomain.equals(newDomain)) {
+            return Optional.empty();
+        }
+
+        LanceTableHandle newHandle = new LanceTableHandle(
+                oldHandle.getSchemaName(),
+                oldHandle.getTableName(),
+                oldHandle.getTablePath(),
+                oldHandle.getProjections(),
+                newDomain,
+                oldHandle.getLimit());
+        return Optional.of(new ConstraintApplicationResult<>(newHandle, remainingFilter, constraint.getExpression(), false));
     }
 
     @VisibleForTesting
