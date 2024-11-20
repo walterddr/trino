@@ -13,8 +13,10 @@
  */
 package io.trino.plugin.lance;
 
+import com.lancedb.lance.ipc.ScanOptions;
 import io.trino.plugin.lance.internal.LanceArrowToPageScanner;
 import io.trino.plugin.lance.internal.LanceReader;
+import io.trino.plugin.lance.internal.LanceUtils;
 import io.trino.plugin.lance.internal.ScannerFactory;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
@@ -41,11 +43,13 @@ public abstract class LanceBasePageSource
     protected final LanceTableHandle tableHandle;
 
     protected final AtomicLong readBytes = new AtomicLong();
+    protected final AtomicLong readRows = new AtomicLong();
     protected final AtomicBoolean isFinished = new AtomicBoolean();
 
     protected final LanceArrowToPageScanner lanceArrowToPageScanner;
     protected final BufferAllocator bufferAllocator;
     protected final PageBuilder pageBuilder;
+    protected final long limit;
 
     public LanceBasePageSource(LanceReader lanceReader, LanceTableHandle tableHandle, int maxReadRowsRetries)
     {
@@ -54,10 +58,25 @@ public abstract class LanceBasePageSource
         List<LanceColumnHandle> columns = toColumnHandles(lanceReader, tableHandle);
         this.bufferAllocator = allocator.newChildAllocator(tableHandle.getTableName(), 1024, Long.MAX_VALUE);
         this.lanceArrowToPageScanner =
-                new LanceArrowToPageScanner(bufferAllocator, tableHandle.getTablePath(), columns, getScannerFactory());
+                new LanceArrowToPageScanner(bufferAllocator, tableHandle.getTablePath(), columns, getScannerFactory(), buildScannerOption(tableHandle));
         this.pageBuilder =
                 new PageBuilder(columns.stream().map(LanceColumnHandle::trinoType).collect(toImmutableList()));
         this.isFinished.set(false);
+        this.limit = tableHandle.getLimit().isEmpty() ? -1 : tableHandle.getLimit().getAsLong();
+    }
+
+    private static ScanOptions buildScannerOption(LanceTableHandle tableHandle)
+    {
+        ScanOptions.Builder builder = new ScanOptions.Builder();
+        // apply filter clause
+        for (String filterClause : LanceUtils.getFilterClause(tableHandle.getConstraints())) {
+            builder.filter(filterClause);
+        }
+        // apply column projection if exist.
+        if (!tableHandle.getProjections().isEmpty()) {
+            builder.columns(LanceUtils.getProjections(tableHandle.getProjections()));
+        }
+        return builder.build();
     }
 
     public abstract ScannerFactory getScannerFactory();
@@ -65,8 +84,9 @@ public abstract class LanceBasePageSource
     @VisibleForTesting
     public static List<LanceColumnHandle> toColumnHandles(LanceReader lanceReader, LanceTableHandle tableHandle)
     {
-        return lanceReader.getColumnHandle(tableHandle.getTableName()).values().stream()
-                .map(c -> (LanceColumnHandle) c).collect(Collectors.toList());
+        return lanceReader.getColumnHandle(tableHandle.getTableName()).entrySet().stream()
+                .filter(e -> tableHandle.containsProjection(e.getKey()))
+                .map(e -> (LanceColumnHandle) e.getValue()).collect(Collectors.toList());
     }
 
     @Override
@@ -91,13 +111,15 @@ public abstract class LanceBasePageSource
     public Page getNextPage()
     {
         checkState(pageBuilder.isEmpty(), "PageBuilder is not empty at the beginning of a new page");
-        if (!lanceArrowToPageScanner.read()) {
+        if (!lanceArrowToPageScanner.read() || (limit > 0 && readRows.get() >= limit)) {
             isFinished.set(true);
             return null;
         }
         lanceArrowToPageScanner.convert(pageBuilder);
         Page page = pageBuilder.build();
         pageBuilder.reset();
+        readBytes.getAndAdd(page.getSizeInBytes());
+        readRows.getAndAdd(page.getPositionCount());
         return page;
     }
 

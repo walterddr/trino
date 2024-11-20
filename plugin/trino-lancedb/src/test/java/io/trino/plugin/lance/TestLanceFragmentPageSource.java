@@ -13,18 +13,28 @@
  */
 package io.trino.plugin.lance;
 
+import com.google.common.collect.ImmutableMap;
 import com.google.common.io.Resources;
 import io.trino.plugin.lance.internal.LanceReader;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
+import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSplitSource;
 import io.trino.spi.connector.ConnectorTableHandle;
+import io.trino.spi.connector.Constraint;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.predicate.Domain;
+import io.trino.spi.predicate.Range;
+import io.trino.spi.predicate.SortedRangeSet;
+import io.trino.spi.predicate.TupleDomain;
+import org.apache.arrow.vector.types.pojo.ArrowType;
+import org.apache.arrow.vector.types.pojo.FieldType;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
 import java.net.URL;
+import java.util.Collections;
 import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 
@@ -35,8 +45,6 @@ import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_METHOD;
 @TestInstance(PER_METHOD)
 public class TestLanceFragmentPageSource
 {
-    private static final SchemaTableName TEST_TABLE_1 = new SchemaTableName("default", "test_table1");
-
     private LanceMetadata metadata;
     private LanceSplitManager splitManager;
 
@@ -58,7 +66,7 @@ public class TestLanceFragmentPageSource
     public void testFragmentScan()
             throws ExecutionException, InterruptedException
     {
-        ConnectorTableHandle tableHandle = metadata.getTableHandle(null, TEST_TABLE_1, Optional.empty(), Optional.empty());
+        ConnectorTableHandle tableHandle = metadata.getTableHandle(null, TestingUtils.TEST_TABLE_1, Optional.empty(), Optional.empty());
         ConnectorSplitSource splits = splitManager.getSplits(null, null, tableHandle, null, null);
         ConnectorSplitSource.ConnectorSplitBatch batch = splits.getNextBatch(2).get();
         assertThat(batch.getSplits().size()).isEqualTo(2);
@@ -75,6 +83,43 @@ public class TestLanceFragmentPageSource
             block = page.getBlock(1);
             assertThat(BIGINT.getLong(block, 1)).isEqualTo(2L);
             // assert no second page. it should come from the other split
+            page = pageSource.getNextPage();
+            assertThat(page).isNull();
+            // assert that page is now finish
+            assertThat(pageSource.isFinished()).isTrue();
+        }
+    }
+
+    @Test
+    public void testFragmentScanWithPushdown()
+            throws ExecutionException, InterruptedException
+    {
+        ConnectorTableHandle tableHandle = metadata.getTableHandle(null, TestingUtils.TEST_TABLE_1, Optional.empty(), Optional.empty());
+        // 1. apply filter
+        ImmutableMap.Builder<ColumnHandle, Domain> domains = ImmutableMap.builder();
+        domains.put(TestingUtils.COLUMN_HANDLE_B, Domain.create(SortedRangeSet.copyOf(
+                BIGINT, Collections.singletonList(Range.range(BIGINT, 1L, true, Long.MAX_VALUE, false))), false));
+        Constraint constraint = new Constraint(TupleDomain.withColumnDomains(domains.buildOrThrow()));
+        tableHandle = metadata.applyFilter(null, tableHandle, constraint).get().getHandle();
+        // 2. apply project selection
+        tableHandle = metadata.applyProjection(null, tableHandle, TestingUtils.COLUMN_PROJECTIONS, TestingUtils.COLUMN_PROJECTION_ASSIGNMENT).get().getHandle();
+        // 3. apply limit
+        tableHandle = metadata.applyLimit(null, tableHandle, 1).get().getHandle();
+        // create splits.
+        ConnectorSplitSource splits = splitManager.getSplits(null, null, tableHandle, null, null);
+        ConnectorSplitSource.ConnectorSplitBatch batch = splits.getNextBatch(2).get();
+        assertThat(batch.getSplits().size()).isEqualTo(2);
+        LanceSplit lanceSplit = (LanceSplit) batch.getSplits().get(0);
+        // testing split 0 is enough
+        try (LanceFragmentPageSource pageSource = new LanceFragmentPageSource(metadata.getLanceReader(), (LanceTableHandle) tableHandle, lanceSplit.getFragments(), metadata.getLanceConfig().getFetchRetryCount())) {
+            Page page = pageSource.getNextPage();
+            // assert row/column count
+            assertThat(page.getChannelCount()).isEqualTo(2);
+            assertThat(page.getPositionCount()).isEqualTo(1);
+            // assert block content
+            Block block = page.getBlock(0);
+            assertThat(BIGINT.getLong(block, 0)).isEqualTo(1L);
+            // assert no second page. b/c of limit hit
             page = pageSource.getNextPage();
             assertThat(page).isNull();
             // assert that page is now finish

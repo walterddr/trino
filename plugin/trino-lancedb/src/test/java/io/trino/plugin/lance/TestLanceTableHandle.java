@@ -21,7 +21,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestLanceTableHandle
 {
-    private final LanceTableHandle tableHandle = new LanceTableHandle("schemaName", "tableName", "path/to/table");
+    private final LanceTableHandle tableHandle = new LanceTableHandle(
+            "schemaName", "tableName", "path/to/table");
 
     @Test
     public void testJsonRoundTrip()

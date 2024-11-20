@@ -15,6 +15,7 @@ package io.trino.plugin.lance;
 
 import com.lancedb.lance.Dataset;
 import com.lancedb.lance.ipc.LanceScanner;
+import com.lancedb.lance.ipc.ScanOptions;
 import io.airlift.log.Logger;
 import io.trino.plugin.lance.internal.LanceReader;
 import io.trino.plugin.lance.internal.ScannerFactory;
@@ -43,10 +44,10 @@ public class LanceDatasetPageSource
         private LanceScanner lanceScanner;
 
         @Override
-        public LanceScanner open(String tablePath, BufferAllocator allocator)
+        public LanceScanner open(String tablePath, BufferAllocator allocator, ScanOptions scanOptions)
         {
             this.lanceDataset = Dataset.open(tablePath, allocator);
-            this.lanceScanner = lanceDataset.newScan();
+            this.lanceScanner = lanceDataset.newScan(scanOptions);
             return lanceScanner;
         }
 
